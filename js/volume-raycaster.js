@@ -60,9 +60,10 @@ var colormaps = {
 
 var loadVolume = function(file, onload) {
 	var m = file.match(fileRegex);
-	var volDims = [parseInt(m[2]), parseInt(m[3]), parseInt(m[4])];
+	var volDims = [512,512,200];
 	
 	var url = "https://www.dl.dropboxusercontent.com/s/" + file + "?dl=1";
+	var url = file;
 	var req = new XMLHttpRequest();
 	var loadingProgressText = document.getElementById("loadingText");
 	var loadingProgressBar = document.getElementById("loadingProgressBar");
@@ -85,6 +86,11 @@ var loadVolume = function(file, onload) {
 		loadingProgressText.innerHTML = "Loaded Volume";
 		loadingProgressBar.setAttribute("style", "width: 100%");
 		var dataBuffer = req.response;
+
+		// var reader = new FileReader();
+		// var thefile = new File("D:/CTA_512x512x200.raw");
+		// var dataBuffer = reader.readAsArrayBuffer(thefile);
+		var dataBuffer = false;
 		if (dataBuffer) {
 			dataBuffer = new Uint8Array(dataBuffer);
 			onload(file, dataBuffer);
@@ -102,7 +108,7 @@ var selectVolume = function() {
 
 	loadVolume(volumes[selection], function(file, dataBuffer) {
 		var m = file.match(fileRegex);
-		var volDims = [parseInt(m[2]), parseInt(m[3]), parseInt(m[4])];
+		var volDims = [512, 512, 200];
 
 		var tex = gl.createTexture();
 		gl.activeTexture(gl.TEXTURE0);
@@ -299,3 +305,93 @@ var fillcolormapSelector = function() {
 	}
 }
 
+document.getElementById('file-input')
+  .addEventListener('change', readSingleFile, false);
+
+function readSingleFile(e) {
+	var file = e.target.files[0];
+	if (!file) {
+	  return;
+	}
+	var reader = new FileReader();
+	reader.onload = function(e) {
+	  var contents = e.target.result;
+	  contents = new Uint8Array(contents);
+	  loadDATA(file, contents);
+	};
+	reader.readAsArrayBuffer(file);
+  }
+
+function loadDATA(file, dataBuffer) {
+	//var m = file.match(fileRegex);
+	var volDims = [512, 512, 498];
+
+	var tex = gl.createTexture();
+	gl.activeTexture(gl.TEXTURE0);
+	gl.bindTexture(gl.TEXTURE_3D, tex);
+	gl.texStorage3D(gl.TEXTURE_3D, 1, gl.R8, volDims[0], volDims[1], volDims[2]);
+	gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+	gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+	gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+	gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+	gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0,
+		volDims[0], volDims[1], volDims[2],
+		gl.RED, gl.UNSIGNED_BYTE, dataBuffer);
+
+	var longestAxis = Math.max(volDims[0], Math.max(volDims[1], volDims[2]));
+	var volScale = [volDims[0] / longestAxis, volDims[1] / longestAxis,
+		volDims[2] / longestAxis];
+
+	gl.uniform3iv(shader.uniforms["volume_dims"], volDims);
+	gl.uniform3fv(shader.uniforms["volume_scale"], volScale);
+
+	newVolumeUpload = true;
+	if (!volumeTexture) {
+		volumeTexture = tex;
+		setInterval(function() {
+			// Save them some battery if they're not viewing the tab
+			if (document.hidden) {
+				return;
+			}
+			var startTime = new Date();
+			gl.clearColor(1.0, 1.0, 1.0, 1.0);
+			gl.clear(gl.COLOR_BUFFER_BIT);
+
+			// Reset the sampling rate and camera for new volumes
+			if (newVolumeUpload) {
+				camera = new ArcballCamera(defaultEye, center, up, 2, [WIDTH, HEIGHT]);
+				samplingRate = 1;
+				gl.uniform1f(shader.uniforms["dt_scale"], samplingRate);
+			}
+			projView = mat4.mul(projView, proj, camera.camera);
+			gl.uniformMatrix4fv(shader.uniforms["proj_view"], false, projView);
+
+			var eye = [camera.invCamera[12], camera.invCamera[13], camera.invCamera[14]];
+			gl.uniform3fv(shader.uniforms["eye_pos"], eye);
+
+			gl.drawArrays(gl.TRIANGLE_STRIP, 0, cubeStrip.length / 3);
+			// Wait for rendering to actually finish
+			gl.finish();
+			var endTime = new Date();
+			var renderTime = endTime - startTime;
+			var targetSamplingRate = renderTime / targetFrameTime;
+
+			if (takeScreenShot) {
+				takeScreenShot = false;
+				canvas.toBlob(function(b) { saveAs(b, "screen.png"); }, "image/png");
+			}
+
+			// If we're dropping frames, decrease the sampling rate
+			if (!newVolumeUpload && targetSamplingRate > samplingRate) {
+				samplingRate = 0.8 * samplingRate + 0.2 * targetSamplingRate;
+				gl.uniform1f(shader.uniforms["dt_scale"], samplingRate);
+			}
+
+			newVolumeUpload = false;
+			startTime = endTime;
+		}, targetFrameTime);
+	} else {
+		gl.deleteTexture(volumeTexture);
+		volumeTexture = tex;
+	}
+}
